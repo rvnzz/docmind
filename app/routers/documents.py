@@ -1,12 +1,12 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 import os
-import tempfile
-from datetime import datetime
+import uuid
 
 from app.services.parser import DocumentParser
 from app.services.chunker import DocumentChunker
 from app.services.rag import RAGService
+from app.services.storage import LocalStorageManager
 from app.models.schemas import (
     DocumentResponse,
     DocumentListResponse,
@@ -18,124 +18,89 @@ from app.models.schemas import (
     DocumentType,
     DocumentStatus,
     ErrorResponse,
-    SupportedFormatsResponse
+    SupportedFormatsResponse,
+    DocumentMetadata,
 )
 
 router = APIRouter()
-rag_service = RAGService()
+rag = RAGService()
 chunker = DocumentChunker()
 parser = DocumentParser()
+storage = LocalStorageManager()
 
-
-@router.post(
-    "/upload",
-    response_model=DocumentUploadResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}
-)
-async def upload_document(
-        file: UploadFile = File(...)
-) -> DocumentUploadResponse:
-    """Загружает документ и обрабатывает его"""
-    temp_file_path = None
-
+@router.post("/upload", response_model=DocumentUploadResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def upload_document(file: UploadFile = File(...)):
     try:
-        # Проверяем расширение файла
-        file_extension = os.path.splitext(file.filename)[1].lower()
-        supported_formats = parser.get_supported_formats()
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in parser.get_supported_formats():
+            raise HTTPException(400, f"Unsupported: {ext}")
 
-        if file_extension not in supported_formats:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file format: {file_extension}. Supported: {', '.join(supported_formats)}"
-            )
+        content = await file.read()
+        fname = f"{uuid.uuid4()}_{file.filename}"
+        fpath = storage.save_file(fname, content)
 
-        # Сохраняем загруженный файл
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            temp_file_path = tmp_file.name
-
-        # Парсим документ
-        document = parser.parse_document(temp_file_path)
-
-        if not document.get("content"):
-            raise HTTPException(
-                status_code=400,
-                detail="Failed to extract content from document"
-            )
-
-        # Разбиваем на чанки
-        chunks = chunker.chunk_document(document)
-
-        # Добавляем в RAG с сохранением
-        doc_id = rag_service.process_document(document, chunks)
-
-        return DocumentUploadResponse(
-            id=doc_id,
-            filename=file.filename,
-            status=DocumentStatus.COMPLETED,
-            chunks_created=len(chunks),
-            content_length=len(document["content"]),
-            file_type=DocumentType(document["file_type"]),
-            message="Document processed successfully",
-            metadata=document.get("metadata", {})
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-            except Exception:
-                pass
-
-
-@router.post(
-    "/upload-batch",
-    response_model=BatchUploadResponse,
-    responses={500: {"model": ErrorResponse}}
-)
-async def upload_batch(
-        files: List[UploadFile] = File(...)
-) -> BatchUploadResponse:
-    """Загружает несколько документов"""
-    results = []
-    errors = []
-
-    for file in files:
-        temp_file_path = None
         try:
-            file_extension = os.path.splitext(file.filename)[1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
-                content = await file.read()
-                tmp_file.write(content)
-                temp_file_path = tmp_file.name
+            doc = parser.parse_document(fpath)
+            if not doc.get("content"):
+                raise HTTPException(400, "Failed to extract content")
 
-            document = parser.parse_document(temp_file_path)
-            chunks = chunker.chunk_document(document)
-            doc_id = rag_service.process_document(document, chunks)
+            chunks = chunker.chunk_document(doc)
+            doc_id = rag.process_document(doc, chunks, fpath)
 
-            results.append(UploadFileResponse(
+            return DocumentUploadResponse(
                 id=doc_id,
                 filename=file.filename,
                 status=DocumentStatus.COMPLETED,
                 chunks_created=len(chunks),
-                message="Document processed successfully"
+                content_length=len(doc["content"]),
+                file_type=DocumentType(doc["file_type"]),
+                message="OK",
+                metadata=DocumentMetadata(**{
+                    "source": fpath,
+                    "file_size": len(content),
+                    "title": doc.get("metadata", {}).get("title"),
+                    "author": doc.get("metadata", {}).get("author"),
+                })
+            )
+        except HTTPException:
+            storage.delete_file(fpath)
+            raise
+        except:
+            storage.delete_file(fpath)
+            raise
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@router.post("/upload-batch", response_model=BatchUploadResponse, responses={500: {"model": ErrorResponse}})
+async def upload_batch(files: List[UploadFile] = File(...)):
+    results = []
+    errors = []
+
+    for f in files:
+        fpath = None
+        try:
+            content = await f.read()
+            fname = f"{uuid.uuid4()}_{f.filename}"
+            fpath = storage.save_file(fname, content)
+
+            doc = parser.parse_document(fpath)
+            chunks = chunker.chunk_document(doc)
+            doc_id = rag.process_document(doc, chunks, fpath)
+
+            results.append(UploadFileResponse(
+                id=doc_id,
+                filename=f.filename,
+                status=DocumentStatus.COMPLETED,
+                chunks_created=len(chunks),
+                message="OK"
             ))
         except Exception as e:
-            errors.append({
-                "filename": file.filename,
-                "error": str(e)
-            })
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.unlink(temp_file_path)
-                except Exception:
-                    pass
+            if fpath:
+                storage.delete_file(fpath)
+            errors.append({"filename": f.filename, "error": str(e)})
 
     return BatchUploadResponse(
         total=len(files),
@@ -145,172 +110,109 @@ async def upload_batch(
         error_details=errors
     )
 
-
-@router.get(
-    "/documents",
-    response_model=DocumentListResponse,
-    responses={500: {"model": ErrorResponse}}
-)
-async def list_documents(
-        page: int = Query(1, ge=1),
-        limit: int = Query(20, ge=1, le=100),
-        status: Optional[DocumentStatus] = None,
-        file_type: Optional[DocumentType] = None
-) -> DocumentListResponse:
-    """Список всех документов с фильтрацией"""
+@router.get("/documents", response_model=DocumentListResponse, responses={500: {"model": ErrorResponse}})
+async def list_documents(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), status: Optional[DocumentStatus] = None, file_type: Optional[DocumentType] = None):
     try:
-        # Фильтрация
-        filters = {}
-        if status:
-            filters["status"] = status
-        if file_type:
-            filters["file_type"] = file_type
-
         offset = (page - 1) * limit
-        docs = rag_service.get_all_documents(limit, offset)
+        docs, total = rag.get_all_documents(
+            limit=limit,
+            offset=offset,
+            status=status.value if status else None,
+            file_type=file_type.value if file_type else None,
+        )
 
-        # Применяем фильтры (в реальном приложении фильтрация в БД)
-        if filters:
-            docs = [d for d in docs if all(d.get(k) == v for k, v in filters.items())]
-
-        documents = []
-        for doc in docs:
-            documents.append(DocumentResponse(
-                id=doc.get("id", ""),
-                filename=doc.get("filename", ""),
-                file_type=DocumentType(doc.get("file_type", "unknown")),
-                content_length=doc.get("content_length", 0),
-                chunks_count=doc.get("chunks_count", 0),
-                metadata=doc.get("metadata", {}),
-                status=DocumentStatus(doc.get("status", "pending")),
-                created_at=doc.get("created_at", datetime.now()),
-                updated_at=doc.get("updated_at", datetime.now()),
-                processed_at=doc.get("processed_at")
+        items = []
+        for d in docs:
+            items.append(DocumentResponse(
+                id=d["id"],
+                filename=d["filename"],
+                file_type=DocumentType(d["file_type"]),
+                content_length=d["content_length"],
+                chunks_count=d["chunks_count"],
+                metadata=d.get("metadata", {}),
+                status=DocumentStatus(d["status"]),
+                created_at=d["created_at"],
+                updated_at=d.get("updated_at") or d["created_at"],
+                processed_at=d.get("processed_at")
             ))
 
-        return DocumentListResponse(
-            total=rag_service.get_documents_count(),
-            documents=documents,
-            page=page,
-            limit=limit
-        )
+        return DocumentListResponse(total=total, documents=items, page=page, limit=limit)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
-
-@router.get(
-    "/documents/{document_id}",
-    response_model=DocumentResponse,
-    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}
-)
-async def get_document(document_id: str) -> DocumentResponse:
-    """Получает информацию о документе"""
+@router.get("/documents/{doc_id}", response_model=DocumentResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_document(doc_id: str):
     try:
-        doc = rag_service.get_document_info(document_id)
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        d = rag.get_document_info(doc_id)
+        if not d:
+            raise HTTPException(404, "Not found")
 
         return DocumentResponse(
-            id=doc.get("id", ""),
-            filename=doc.get("filename", ""),
-            file_type=DocumentType(doc.get("file_type", "unknown")),
-            content_length=doc.get("content_length", 0),
-            chunks_count=doc.get("chunks_count", 0),
-            metadata=doc.get("metadata", {}),
-            status=DocumentStatus(doc.get("status", "pending")),
-            created_at=doc.get("created_at", datetime.now()),
-            updated_at=doc.get("updated_at", datetime.now()),
-            processed_at=doc.get("processed_at")
+            id=d["id"],
+            filename=d["filename"],
+            file_type=DocumentType(d["file_type"]),
+            content_length=d["content_length"],
+            chunks_count=d["chunks_count"],
+            metadata=d.get("metadata", {}),
+            status=DocumentStatus(d["status"]),
+            created_at=d["created_at"],
+            updated_at=d.get("updated_at") or d["created_at"],
+            processed_at=d.get("processed_at")
         )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
-
-@router.delete(
-    "/documents/{document_id}",
-    response_model=DocumentDeleteResponse,
-    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}
-)
-async def delete_document(document_id: str) -> DocumentDeleteResponse:
-    """Удаляет документ"""
+@router.delete("/documents/{doc_id}", response_model=DocumentDeleteResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def delete_document(doc_id: str):
     try:
-        doc = rag_service.get_document_info(document_id)
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        d = rag.get_document_info(doc_id)
+        if not d:
+            raise HTTPException(404, "Not found")
 
-        success = rag_service.delete_document(document_id)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to delete document")
+        ok = rag.delete_document(doc_id)
+        if not ok:
+            raise HTTPException(500, "Delete failed")
 
-        return DocumentDeleteResponse(
-            id=document_id,
-            filename=doc.get("filename", ""),
-            status="deleted",
-            message=f"Document {document_id} deleted successfully"
-        )
+        return DocumentDeleteResponse(id=doc_id, filename=d["filename"], status="deleted", message="OK")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
+@router.get("/supported-formats", response_model=SupportedFormatsResponse)
+async def get_supported_formats():
+    fmts = parser.get_supported_formats()
+    return SupportedFormatsResponse(formats=fmts, total=len(fmts))
 
-@router.get(
-    "/supported-formats",
-    response_model=SupportedFormatsResponse
-)
-async def get_supported_formats() -> SupportedFormatsResponse:
-    """Возвращает список поддерживаемых форматов"""
-    return SupportedFormatsResponse(
-        formats=parser.get_supported_formats(),
-        total=len(parser.get_supported_formats())
-    )
-
-
-@router.post(
-    "/documents/search",
-    response_model=DocumentListResponse,
-    responses={500: {"model": ErrorResponse}}
-)
-async def search_documents(request: DocumentSearchRequest) -> DocumentListResponse:
-    """Поиск документов по различным критериям"""
+@router.post("/documents/search", response_model=DocumentListResponse, responses={500: {"model": ErrorResponse}})
+async def search_documents(req: DocumentSearchRequest):
     try:
-        filters = {}
-        if request.file_type:
-            filters["file_type"] = request.file_type
-        if request.status:
-            filters["status"] = request.status
-
-        offset = (request.page - 1) * request.limit
-        docs = rag_service.search_documents(
-            request.query or "",
-            **filters
+        offset = (req.page - 1) * req.limit
+        docs, total = rag.search_documents(
+            req.query or "",
+            status=req.status.value if req.status else None,
+            file_type=req.file_type.value if req.file_type else None,
         )
 
-        # Пагинация
-        paginated_docs = docs[offset:offset + request.limit]
+        paginated = docs[offset:offset + req.limit]
 
-        documents = []
-        for doc in paginated_docs:
-            documents.append(DocumentResponse(
-                id=doc.get("id", ""),
-                filename=doc.get("filename", ""),
-                file_type=DocumentType(doc.get("file_type", "unknown")),
-                content_length=doc.get("content_length", 0),
-                chunks_count=doc.get("chunks_count", 0),
-                metadata=doc.get("metadata", {}),
-                status=DocumentStatus(doc.get("status", "pending")),
-                created_at=doc.get("created_at", datetime.now()),
-                updated_at=doc.get("updated_at", datetime.now()),
-                processed_at=doc.get("processed_at")
+        items = []
+        for d in paginated:
+            items.append(DocumentResponse(
+                id=d["id"],
+                filename=d["filename"],
+                file_type=DocumentType(d["file_type"]),
+                content_length=d["content_length"],
+                chunks_count=d["chunks_count"],
+                metadata=d.get("metadata", {}),
+                status=DocumentStatus(d["status"]),
+                created_at=d["created_at"],
+                updated_at=d.get("updated_at") or d["created_at"],
+                processed_at=d.get("processed_at")
             ))
 
-        return DocumentListResponse(
-            total=len(docs),
-            documents=documents,
-            page=request.page,
-            limit=request.limit
-        )
+        return DocumentListResponse(total=total, documents=items, page=req.page, limit=req.limit)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))

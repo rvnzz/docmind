@@ -4,8 +4,43 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: example_db
+      POSTGRES_DB: docmind
     ports:
       - "5432:5432"
     volumes:
-      - ./pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PGVECTOR_CONNECTION=postgresql+psycopg://postgres:password@db:5432/docmind
+      - DATABASE_URL=postgresql+psycopg://postgres:password@db:5432/docmind
+      - DOCUMENTS_DIR=/data/documents
+    volumes:
+      - documents:/data/documents
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+
+  ui:
+    build: .
+    command: ["uv", "run", "streamlit", "run", "ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://app:8000/api/v1
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  documents:

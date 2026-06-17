@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -19,7 +19,6 @@ class DocumentType(str, Enum):
     PPTX = "pptx"
     UNKNOWN = "unknown"
 
-# === DOCUMENT SCHEMAS ===
 class DocumentMetadata(BaseModel):
     source: Optional[str] = None
     file_size: Optional[int] = None
@@ -39,7 +38,7 @@ class DocumentBase(BaseModel):
     metadata: DocumentMetadata = Field(default_factory=DocumentMetadata)
 
 class DocumentCreate(DocumentBase):
-    content: str  # Полный текст документа
+    content: str
     chunks: List[Dict[str, Any]] = Field(default_factory=list)
 
 class DocumentResponse(DocumentBase):
@@ -72,7 +71,6 @@ class DocumentDeleteResponse(BaseModel):
     status: str
     message: str
 
-# === UPLOAD SCHEMAS ===
 class UploadFileResponse(BaseModel):
     id: str
     filename: str
@@ -88,10 +86,10 @@ class BatchUploadResponse(BaseModel):
     error_details: List[Dict[str, Any]]
 
 class QuestionRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=1000, description="Вопрос пользователя")
-    top_k: Optional[int] = Field(5, ge=1, le=20, description="Количество релевантных чанков для поиска")
-    document_ids: Optional[List[str]] = Field(None, description="Фильтр по ID документов")
-    include_sources: Optional[bool] = Field(True, description="Включить источники в ответ")
+    question: str = Field(..., min_length=1, max_length=1000)
+    top_k: Optional[int] = Field(5, ge=1, le=20)
+    document_ids: Optional[List[str]] = None
+    include_sources: Optional[bool] = True
 
 class SourceInfo(BaseModel):
     document_id: str
@@ -101,11 +99,11 @@ class SourceInfo(BaseModel):
     similarity_score: Optional[float] = None
 
 class AnswerResponse(BaseModel):
-    id: str = Field(..., description="Уникальный ID ответа")
+    id: str
     question: str
     answer: str
     sources: List[SourceInfo] = Field(default_factory=list)
-    confidence: Optional[float] = Field(None, ge=0, le=1)
+    confidence: Optional[float] = None
     processing_time_ms: Optional[float] = None
     created_at: datetime = Field(default_factory=datetime.now)
 
@@ -116,13 +114,13 @@ class ChatHistoryResponse(BaseModel):
     limit: Optional[int] = 20
 
 class DocumentSearchRequest(BaseModel):
-    query: Optional[str] = Field(None, description="Поисковый запрос")
+    query: Optional[str] = None
     file_type: Optional[DocumentType] = None
     status: Optional[DocumentStatus] = None
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None
-    page: Optional[int] = Field(1, ge=1)
-    limit: Optional[int] = Field(20, ge=1, le=100)
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
 
 class ChunkResponse(BaseModel):
     id: str
