@@ -244,10 +244,10 @@ sequenceDiagram
     Storage-->>Router: file_path
     
     Router->>Parser: parse_document(file_path)
-    Parser-->>Router: {content, filename, file_type, metadata}
+    Parser-->>Router: content, filename, file_type, metadata
     
     Router->>Chunker: chunk_document(document)
-    Chunker-->>Router: chunks[]
+    Chunker-->>Router: chunks
     
     Router->>RAG: process_document(document, chunks, file_path)
     
@@ -255,7 +255,7 @@ sequenceDiagram
     DB-->>RAG: document (with id)
     
     RAG->>EmbedAPI: embed_chunks(chunks)
-    EmbedAPI-->>RAG: vector_ids[]
+    EmbedAPI-->>RAG: vector_ids
     
     RAG->>PGVec: add_chunks(chunks, doc_id, filename)
     PGVec-->>RAG: success
@@ -298,12 +298,12 @@ sequenceDiagram
     participant LLM as Anthropic Claude
     participant DB as PostgreSQL
     
-    Client->>Router: POST /ask {question, top_k}
+    Client->>Router: POST /ask question, top_k
     Router->>RAG: answer_question(question, top_k)
     
     RAG->>PGVec: similarity_search(question, k=top_k)
-    Note over PGVec: Вопрос -> эмбеддинг -><br/>cosine similarity поиск
-    PGVec-->>RAG: results[] (chunks + scores)
+    Note over PGVec: Вопрос - эмбеддинг -<br/>cosine similarity поиск
+    PGVec-->>RAG: results chunks + scores
     
     RAG->>RAG: Формирование контекста из чанков
     RAG->>RAG: Формирование промпта
@@ -315,7 +315,7 @@ sequenceDiagram
     RAG->>DB: create_answer(question, answer, sources, time)
     DB-->>RAG: answer
     
-    RAG-->>Router: {id, question, answer, sources, time}
+    RAG-->>Router: id, question, answer, sources, time
     Router-->>Client: AnswerResponse
 ```
 
@@ -341,7 +341,7 @@ sequenceDiagram
     participant Storage as Local Storage
     participant PGVec as PGVector
     
-    Client->>Router: DELETE /documents/{id}
+    Client->>Router: DELETE /documents/id
     Router->>RAG: get_document_info(id)
     RAG->>DB: get_document(id)
     DB-->>RAG: document
