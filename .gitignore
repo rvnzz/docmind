@@ -2,3 +2,4 @@
 pgdata
 .env
 documents/
+.idea
