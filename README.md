@@ -309,7 +309,7 @@ sequenceDiagram
     RAG->>RAG: Формирование промпта
     
     RAG->>LLM: invoke(prompt)
-    Note over LLM: Промпт:<br/>"Контекст: {chunks}<br/>Вопрос: {question}<br/>Ответ:"
+    Note over LLM: Промпт с контекстом<br/>и вопросом
     LLM-->>RAG: answer_text
     
     RAG->>DB: create_answer(question, answer, sources, time)
@@ -497,7 +497,7 @@ flowchart TD
         B2 --> B3[Cosine similarity<br/>поиск в PGVector]
         B3 --> B4[Top-K релевантных<br/>чанков]
         B4 --> B5[Формирование контекста<br/>из чанков]
-        B5 --> B6[Промпт для LLM:<br/>"Контекст: {chunks}<br/>Вопрос: {question}"]
+        B5 --> B6[Создание промпта<br/>для LLM]
         B6 --> B7[Anthropic Claude<br/>генерирует ответ]
         B7 --> B8[Сохранение в БД<br/>+ возврат ответа]
     end
